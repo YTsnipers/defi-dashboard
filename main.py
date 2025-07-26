@@ -556,17 +556,27 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         app_url = get_app_url()
         
-        await update.message.reply_text(
+        welcome_message = (
             "Welcome to yield & funding rate updates!\n"
             f"Auto push: Every {push_interval//60} minutes\n"
             "Use /check to view immediately\n"
             "Use /stop to unsubscribe\n"
             f"Dashboard: {app_url}"
         )
+        
+        logger.info(f"準備發送歡迎訊息長度: {len(welcome_message)}")
+        logger.info(f"歡迎訊息內容: {repr(welcome_message)}")
+        
+        await update.message.reply_text(welcome_message)
         logger.info(f"/start 指令處理完成")
         
     except Exception as e:
         logger.error(f"handle_start error: {e}")
+        logger.error(f"錯誤詳情: {str(e)}")
+        try:
+            await update.message.reply_text(f"❌ 處理錯誤: {str(e)}")
+        except:
+            logger.error("無法發送錯誤訊息")
 
 async def handle_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global subscribers
@@ -595,12 +605,30 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         message = get_combined_message()
         logger.info(f"數據取得完成，訊息長度: {len(message)}")
+        logger.info(f"準備發送的訊息內容前100字符: {repr(message[:100])}")
+        logger.info(f"準備發送的訊息內容後100字符: {repr(message[-100:])}")
         
+        # 檢查訊息是否為空或異常
+        if not message or message.strip() == "":
+            logger.error("訊息內容為空！")
+            await status_message.edit_text("❌ 錯誤：數據為空")
+            return
+            
+        if len(message) > 4096:  # Telegram 單條訊息限制
+            logger.warning(f"訊息過長 ({len(message)} 字符)，將被截斷")
+            message = message[:4090] + "..."
+        
+        logger.info(f"即將發送訊息到 Chat ID: {chat_id}")
         await status_message.edit_text(message)
         logger.info(f"/check 指令處理完成")
         
     except Exception as e:
         logger.error(f"handle_check error: {e}")
+        logger.error(f"錯誤詳情: {str(e)}")
+        try:
+            await update.message.reply_text(f"❌ 處理錯誤: {str(e)}")
+        except:
+            logger.error("無法發送錯誤訊息")
 
 async def send_to_all_subscribers(message):
     """發送訊息給所有訂閱者"""
