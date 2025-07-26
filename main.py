@@ -1,4 +1,4 @@
-# main.py - Render 雲端版本 (調試版)
+# main.py - Render 雲端版本 (生產版)
 #!/usr/bin/env python3
 
 import datetime
@@ -29,51 +29,6 @@ SUB_FILE = "subscribers.json"
 PORT = int(os.getenv("PORT", 10000))  # Render 預設端口
 WEBHOOK_PATH = "/webhook"
 REQUEST_TIMEOUT = 10
-
-# === 調試 Bot Token ===
-def debug_bot_token():
-    """調試 Bot Token 設定"""
-    print("=" * 50)
-    print("🔍 BOT TOKEN 調試資訊")
-    print("=" * 50)
-    
-    if BOT_TOKEN:
-        print(f"✓ BOT_TOKEN 已設定")
-        print(f"  長度: {len(BOT_TOKEN)} 字符")
-        print(f"  前10字符: {BOT_TOKEN[:10]}")
-        print(f"  後10字符: ...{BOT_TOKEN[-10:]}")
-        print(f"  包含冒號: {'✓' if ':' in BOT_TOKEN else '✗'}")
-        
-        # 檢查格式
-        parts = BOT_TOKEN.split(':')
-        if len(parts) == 2:
-            print(f"  格式檢查: ✓ (數字部分:{len(parts[0])}, 字母部分:{len(parts[1])})")
-        else:
-            print(f"  格式檢查: ✗ (不正確的格式)")
-            
-        # 測試 Telegram API
-        print("\n🌐 測試 Telegram API 連接...")
-        try:
-            response = requests.get(
-                f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", 
-                timeout=10
-            )
-            result = response.json()
-            if result.get("ok"):
-                bot_info = result.get("result", {})
-                print(f"  ✓ API 連接成功")
-                print(f"  Bot 名稱: {bot_info.get('first_name', 'N/A')}")
-                print(f"  Bot 用戶名: @{bot_info.get('username', 'N/A')}")
-                print(f"  Bot ID: {bot_info.get('id', 'N/A')}")
-            else:
-                print(f"  ✗ API 錯誤: {result}")
-        except Exception as e:
-            print(f"  ✗ API 連接失敗: {e}")
-    else:
-        print("✗ BOT_TOKEN 未設定或為空")
-        
-    print("=" * 50)
-    return BOT_TOKEN is not None and ':' in BOT_TOKEN
 
 # === Hyperliquid 設定 ===
 HYPERLIQUID_API_URL = "https://api.hyperliquid.xyz/info"
@@ -108,7 +63,7 @@ subscribers = set()
 auto_push_enabled = True
 push_interval = 300  # 5 分鐘
 
-# === 儀表板 HTML（簡化版，包含完整樣式）===
+# === 儀表板 HTML ===
 DASHBOARD_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -123,7 +78,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         .header h1 { font-size: 3rem; font-weight: 700; margin-bottom: 10px; color: #212529; }
         .header p { font-size: 1.2rem; color: #6c757d; }
         .status-banner { background: linear-gradient(135deg, #28a745, #20c997); color: white; text-align: center; padding: 15px; border-radius: 10px; margin-bottom: 30px; }
-        .debug-banner { background: linear-gradient(135deg, #ffc107, #fd7e14); color: white; text-align: center; padding: 15px; border-radius: 10px; margin-bottom: 30px; }
         .pools-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 18px; margin-bottom: 40px; }
         .pool-card { background: white; border-radius: 12px; padding: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); border: 1px solid #e9ecef; transition: all 0.3s ease; }
         .pool-card:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
@@ -156,12 +110,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
             <h1>DeFi Yield Dashboard</h1>
             <p>Real-time tracking of PENDLE yields and Hyperliquid funding rates</p>
         </div>
-        
-        {% if debug_info %}
-        <div class="debug-banner">
-            🔧 調試模式 | Bot Token: {{ debug_info.token_status }} | API: {{ debug_info.api_status }} | 長度: {{ debug_info.token_length }}
-        </div>
-        {% endif %}
         
         <div class="status-banner">
             🚀 Running on Render | Bot: {{ 'Online' if bot_running else 'Offline' }} | Subscribers: {{ subscriber_count }} | Last updated: {{ last_update }}
@@ -235,17 +183,12 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 # === 取得 Render URL ===
 def get_app_url():
     """取得 Render 應用 URL"""
-    # Render 提供的環境變數
     render_external_url = os.getenv("RENDER_EXTERNAL_URL")
     if render_external_url:
-        logger.info(f"使用 RENDER_EXTERNAL_URL: {render_external_url}")
         return render_external_url
     
-    # 如果沒有，使用服務名稱（需要手動設定）
     service_name = os.getenv("RENDER_SERVICE_NAME", "defi-dashboard")
-    url = f"https://{service_name}.onrender.com"
-    logger.info(f"使用 RENDER_SERVICE_NAME: {url}")
-    return url
+    return f"https://{service_name}.onrender.com"
 
 # === 輔助函數 ===
 def load_subscribers():
@@ -408,29 +351,13 @@ def get_dashboard_data():
                     "rate": "API Error"
                 })
 
-        # 調試資訊
-        debug_info = None
-        if BOT_TOKEN:
-            try:
-                response = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe", timeout=5)
-                api_status = "✓" if response.json().get("ok") else "✗"
-            except:
-                api_status = "✗"
-            
-            debug_info = {
-                "token_status": "✓" if BOT_TOKEN else "✗",
-                "token_length": len(BOT_TOKEN) if BOT_TOKEN else 0,
-                "api_status": api_status
-            }
-
         return {
             "pendle_data": pendle_data,
             "merkl_data": merkl_data,
             "hyperliquid_data": hyperliquid_data,
             "last_update": datetime.datetime.now().strftime('%H:%M:%S'),
             "bot_running": telegram_app is not None,
-            "subscriber_count": len(subscribers),
-            "debug_info": debug_info
+            "subscriber_count": len(subscribers)
         }
         
     except Exception as e:
@@ -547,100 +474,49 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global subscribers
     try:
         chat_id = update.effective_chat.id
-        logger.info(f"收到 /start 指令，Chat ID: {chat_id}")
-        
         if chat_id not in subscribers:
             subscribers.add(chat_id)
             save_subscribers(subscribers)
-            logger.info(f"新用戶訂閱，總訂閱數: {len(subscribers)}")
         
         app_url = get_app_url()
         
-        welcome_message = (
+        await update.message.reply_text(
             "Welcome to yield & funding rate updates!\n"
             f"Auto push: Every {push_interval//60} minutes\n"
             "Use /check to view immediately\n"
             "Use /stop to unsubscribe\n"
             f"Dashboard: {app_url}"
         )
-        
-        logger.info(f"準備發送歡迎訊息長度: {len(welcome_message)}")
-        logger.info(f"歡迎訊息內容: {repr(welcome_message)}")
-        
-        await update.message.reply_text(welcome_message)
-        logger.info(f"/start 指令處理完成")
-        
     except Exception as e:
         logger.error(f"handle_start error: {e}")
-        logger.error(f"錯誤詳情: {str(e)}")
-        try:
-            await update.message.reply_text(f"❌ 處理錯誤: {str(e)}")
-        except:
-            logger.error("無法發送錯誤訊息")
 
 async def handle_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global subscribers
     try:
         chat_id = update.effective_chat.id
-        logger.info(f"收到 /stop 指令，Chat ID: {chat_id}")
-        
         if chat_id in subscribers:
             subscribers.remove(chat_id)
             save_subscribers(subscribers)
-            logger.info(f"用戶取消訂閱，總訂閱數: {len(subscribers)}")
-            
         await update.message.reply_text("Successfully unsubscribed")
-        logger.info(f"/stop 指令處理完成")
-        
     except Exception as e:
         logger.error(f"handle_stop error: {e}")
 
 async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        chat_id = update.effective_chat.id
-        logger.info(f"收到 /check 指令，Chat ID: {chat_id}")
-        
         status_message = await update.message.reply_text("Fetching latest data...")
-        logger.info(f"開始取得數據...")
-        
         message = get_combined_message()
-        logger.info(f"數據取得完成，訊息長度: {len(message)}")
-        logger.info(f"準備發送的訊息內容前100字符: {repr(message[:100])}")
-        logger.info(f"準備發送的訊息內容後100字符: {repr(message[-100:])}")
-        
-        # 檢查訊息是否為空或異常
-        if not message or message.strip() == "":
-            logger.error("訊息內容為空！")
-            await status_message.edit_text("❌ 錯誤：數據為空")
-            return
-            
-        if len(message) > 4096:  # Telegram 單條訊息限制
-            logger.warning(f"訊息過長 ({len(message)} 字符)，將被截斷")
-            message = message[:4090] + "..."
-        
-        logger.info(f"即將發送訊息到 Chat ID: {chat_id}")
         await status_message.edit_text(message)
-        logger.info(f"/check 指令處理完成")
-        
     except Exception as e:
         logger.error(f"handle_check error: {e}")
-        logger.error(f"錯誤詳情: {str(e)}")
-        try:
-            await update.message.reply_text(f"❌ 處理錯誤: {str(e)}")
-        except:
-            logger.error("無法發送錯誤訊息")
 
 async def send_to_all_subscribers(message):
     """發送訊息給所有訂閱者"""
     global subscribers
     if not subscribers:
-        logger.info("沒有訂閱者，跳過推播")
         return
     
     failed_chats = []
     success_count = 0
-    
-    logger.info(f"開始推播給 {len(subscribers)} 位訂閱者")
     
     for chat_id in subscribers.copy():
         try:
@@ -648,7 +524,7 @@ async def send_to_all_subscribers(message):
             success_count += 1
             await asyncio.sleep(0.1)
         except Exception as e:
-            logger.warning(f"推播失敗 chat_id={chat_id}: {e}")
+            logger.warning(f"Push failed chat_id={chat_id}: {e}")
             failed_chats.append(chat_id)
     
     # 移除失效的 chat_id
@@ -656,28 +532,23 @@ async def send_to_all_subscribers(message):
         for chat_id in failed_chats:
             subscribers.discard(chat_id)
         save_subscribers(subscribers)
-        logger.info(f"移除 {len(failed_chats)} 個失效的 chat ID")
+        logger.info(f"Removed {len(failed_chats)} failed chat IDs")
     
-    logger.info(f"推播完成: {success_count} 成功, {len(failed_chats)} 失敗")
+    logger.info(f"Auto push completed: {success_count} sent, {len(failed_chats)} failed")
 
 # === 自動推播任務 ===
 async def auto_push_task():
     """自動推播任務"""
     global auto_push_enabled, push_interval
     
-    logger.info(f"自動推播任務啟動，間隔: {push_interval} 秒")
-    
     while True:
         if auto_push_enabled and subscribers:
             try:
-                logger.info("開始自動推播...")
                 message = get_combined_message()
                 await send_to_all_subscribers(message)
-                logger.info(f"自動推播完成，發送給 {len(subscribers)} 位訂閱者")
+                logger.info(f"Auto push completed, sent to {len(subscribers)} subscribers")
             except Exception as e:
-                logger.error(f"自動推播錯誤: {e}")
-        else:
-            logger.info(f"跳過推播 (enabled: {auto_push_enabled}, subscribers: {len(subscribers)})")
+                logger.error(f"Auto push error: {e}")
         
         await asyncio.sleep(push_interval)
 
@@ -696,8 +567,7 @@ def dashboard():
                 hyperliquid_data=[], 
                 last_update="Error",
                 bot_running=False,
-                subscriber_count=0,
-                debug_info=None
+                subscriber_count=0
             )
     except Exception as e:
         logger.error(f"Dashboard page error: {e}")
@@ -710,9 +580,7 @@ def health_check():
         "status": "healthy",
         "timestamp": datetime.datetime.now().isoformat(),
         "bot_running": telegram_app is not None,
-        "subscribers": len(subscribers),
-        "bot_token_set": BOT_TOKEN is not None,
-        "bot_token_length": len(BOT_TOKEN) if BOT_TOKEN else 0
+        "subscribers": len(subscribers)
     })
 
 @app.route('/api/yields')
@@ -733,22 +601,13 @@ def api_yields():
 def webhook():
     """處理 Telegram webhook"""
     try:
-        logger.info("收到 webhook 請求")
         data = request.get_json(force=True)
-        logger.info(f"Webhook 數據: {data}")
-        
         if telegram_app and app_loop:
             update = Update.de_json(data, telegram_app.bot)
-            logger.info(f"處理 update: {update}")
-            
             asyncio.run_coroutine_threadsafe(
                 telegram_app.process_update(update),
                 app_loop
             )
-            logger.info("Webhook 處理完成")
-        else:
-            logger.error(f"Telegram app 或 loop 未初始化: app={telegram_app}, loop={app_loop}")
-            
         return jsonify({"status": "ok"})
     except Exception as e:
         logger.error(f"Webhook error: {e}")
@@ -758,13 +617,13 @@ def webhook():
 def setup_webhook():
     """設定 Telegram webhook for Render"""
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN 未設定，無法設定 webhook")
+        logger.error("BOT_TOKEN not set, cannot setup webhook")
         return False
         
     app_url = get_app_url()
     webhook_url = f"{app_url}{WEBHOOK_PATH}"
     
-    logger.info(f"設定 Telegram Webhook: {webhook_url}")
+    logger.info(f"Setting Telegram Webhook: {webhook_url}")
     
     try:
         response = requests.post(
@@ -773,16 +632,14 @@ def setup_webhook():
             timeout=10
         )
         result = response.json()
-        logger.info(f"Webhook 設定回應: {result}")
-        
         if result.get("ok"):
-            logger.info("Webhook 設定成功")
+            logger.info("Webhook setup successful")
             return True
         else:
-            logger.error(f"Webhook 設定失敗: {result}")
+            logger.error(f"Webhook setup failed: {result}")
             return False
     except Exception as e:
-        logger.error(f"Webhook 設定錯誤: {e}")
+        logger.error(f"Webhook setup error: {e}")
         return False
 
 # === 初始化 Telegram 應用程式 ===
@@ -791,11 +648,10 @@ async def setup_telegram():
     global telegram_app, app_loop
     
     if not BOT_TOKEN:
-        logger.error("BOT_TOKEN 未設定，無法初始化 Telegram 應用程式")
+        logger.error("BOT_TOKEN not set, cannot initialize Telegram app")
         return False
     
     try:
-        logger.info("初始化 Telegram 應用程式...")
         telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
         app_loop = asyncio.get_running_loop()
         
@@ -803,16 +659,15 @@ async def setup_telegram():
         telegram_app.add_handler(CommandHandler("start", handle_start))
         telegram_app.add_handler(CommandHandler("stop", handle_stop))
         telegram_app.add_handler(CommandHandler("check", handle_check))
-        logger.info("指令處理器註冊完成")
         
         await telegram_app.initialize()
         await telegram_app.start()
         
-        logger.info("Telegram 應用程式初始化完成")
+        logger.info("Telegram application initialized")
         return True
         
     except Exception as e:
-        logger.error(f"Telegram 應用程式初始化失敗: {e}")
+        logger.error(f"Telegram app initialization failed: {e}")
         return False
 
 # === 主程序 ===
@@ -831,14 +686,14 @@ def run_async_loop():
         if success:
             # 啟動自動推播任務
             loop.create_task(auto_push_task())
-            logger.info("自動推播任務已啟動")
+            logger.info("Auto push task started")
         else:
-            logger.error("Telegram 設定失敗，僅啟動 Web 服務")
+            logger.error("Telegram setup failed, web service only")
         
         # 保持 loop 運行
         loop.run_forever()
     except Exception as e:
-        logger.error(f"Asyncio loop 錯誤: {e}")
+        logger.error(f"Asyncio loop error: {e}")
     finally:
         loop.close()
 
@@ -846,11 +701,10 @@ def main():
     """主程序 - Render 雲端版"""
     global subscribers
     
-    # 調試 Bot Token
-    token_valid = debug_bot_token()
-    
-    if not token_valid:
-        print("⚠️  Bot Token 有問題，但仍會啟動 Web 服務")
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable not set")
+        print("Error: BOT_TOKEN environment variable not set")
+        return
     
     print("Starting Complete DeFi Dashboard + Telegram Bot (Render)")
     print("Features: Dashboard + Auto Push to Telegram")
@@ -863,20 +717,16 @@ def main():
     # 在背景啟動 asyncio loop (Telegram bot)
     async_thread = threading.Thread(target=run_async_loop, daemon=True)
     async_thread.start()
-    print("Telegram 背景任務已啟動")
     
     # 等待 Telegram 應用程式初始化
     time.sleep(3)
     
     # 設定 webhook
     app_url = get_app_url()
-    if token_valid:
-        if setup_webhook():
-            print(f"✓ Telegram webhook 設定成功: {app_url}{WEBHOOK_PATH}")
-        else:
-            print("✗ Telegram webhook 設定失敗")
+    if setup_webhook():
+        print(f"Telegram webhook setup successful: {app_url}{WEBHOOK_PATH}")
     else:
-        print("⚠️  跳過 webhook 設定 (Token 無效)")
+        print("Telegram webhook setup failed")
     
     # 啟動 Flask 應用程式
     print(f"Dashboard URL: {app_url}")
@@ -890,7 +740,6 @@ def main():
     print("   ✓ /start /check /stop commands")
     print(f"   ✓ Auto push every {push_interval//60} minutes")
     print("   ✓ Health check endpoint for monitoring")
-    print("   🔧 調試模式啟用")
     
     try:
         app.run(host="0.0.0.0", port=PORT, debug=False)
