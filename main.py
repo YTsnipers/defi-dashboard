@@ -1,4 +1,4 @@
-# main.py - Render 雲端版本 (改進版 - 防止推播任務靜默停止)
+# main.py - Render 雲端版本 (修复任务重复启动)
 #!/usr/bin/env python3
 
 import datetime
@@ -63,10 +63,9 @@ subscribers = set()
 auto_push_enabled = True
 push_interval = 300  # 5 分鐘
 
-# === 任務監控變數 ===
+# === 简化的任务状态跟踪 ===
 last_push_time = 0
-push_task_running = False
-task_restart_count = 0
+push_task_active = False
 
 # === 儀表板 HTML ===
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -117,7 +116,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
         
         <div class="status-banner">
-            🚀 Running on Render | Bot: {{ 'Online' if bot_running else 'Offline' }} | Subscribers: {{ subscriber_count }} | Last updated: {{ last_update }} | Task: {{ 'Active' if task_running else 'Inactive' }}
+            🚀 Running on Render | Bot: {{ 'Online' if bot_running else 'Offline' }} | Subscribers: {{ subscriber_count }} | Last updated: {{ last_update }}
         </div>
         
         <div class="pools-grid">
@@ -362,8 +361,7 @@ def get_dashboard_data():
             "hyperliquid_data": hyperliquid_data,
             "last_update": datetime.datetime.now().strftime('%H:%M:%S'),
             "bot_running": telegram_app is not None,
-            "subscriber_count": len(subscribers),
-            "task_running": push_task_running
+            "subscriber_count": len(subscribers)
         }
         
     except Exception as e:
@@ -480,9 +478,12 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global subscribers
     try:
         chat_id = update.effective_chat.id
+        logger.info(f"Received /start from chat_id: {chat_id}")
+        
         if chat_id not in subscribers:
             subscribers.add(chat_id)
             save_subscribers(subscribers)
+            logger.info(f"New subscriber added, total: {len(subscribers)}")
         
         app_url = get_app_url()
         
@@ -493,6 +494,8 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Use /stop to unsubscribe\n"
             f"Dashboard: {app_url}"
         )
+        logger.info(f"/start command completed")
+        
     except Exception as e:
         logger.error(f"handle_start error: {e}")
 
@@ -516,22 +519,19 @@ async def handle_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"handle_check error: {e}")
 
 async def send_to_all_subscribers(message):
-    """發送訊息給所有訂閱者（改進版）"""
+    """發送訊息給所有訂閱者"""
     global subscribers
     if not subscribers:
-        logger.info("No subscribers, skipping push")
         return
     
     failed_chats = []
     success_count = 0
     
-    logger.info(f"Starting push to {len(subscribers)} subscribers")
-    
     for chat_id in subscribers.copy():
         try:
             await telegram_app.bot.send_message(chat_id=chat_id, text=message)
             success_count += 1
-            await asyncio.sleep(0.1)  # 防止過快發送
+            await asyncio.sleep(0.1)
         except Exception as e:
             logger.warning(f"Push failed chat_id={chat_id}: {e}")
             failed_chats.append(chat_id)
@@ -545,98 +545,41 @@ async def send_to_all_subscribers(message):
     
     logger.info(f"Auto push completed: {success_count} sent, {len(failed_chats)} failed")
 
-# === 改進版自動推播任務 ===
+# === 简化的自動推播任務 ===
 async def auto_push_task():
-    """改進版自動推播任務 - 防止靜默停止"""
-    global auto_push_enabled, push_interval, last_push_time, push_task_running
+    """简化的自动推播任务"""
+    global auto_push_enabled, push_interval, last_push_time, push_task_active
     
-    logger.info("🚀 Auto push task started with enhanced error handling")
-    push_task_running = True
+    if push_task_active:
+        logger.warning("Push task already running, skipping duplicate")
+        return
+        
+    push_task_active = True
+    logger.info("Auto push task started")
     
-    consecutive_errors = 0
-    max_consecutive_errors = 3
-    
-    while True:
-        try:
-            current_time = time.time()
-            
-            if auto_push_enabled and subscribers:
-                try:
-                    logger.info(f"📡 Starting auto push to {len(subscribers)} subscribers...")
+    try:
+        while True:
+            try:
+                if auto_push_enabled and subscribers:
+                    logger.info(f"Starting auto push to {len(subscribers)} subscribers...")
                     message = get_combined_message()
-                    
-                    if not message or len(message.strip()) == 0:
-                        logger.error("❌ Generated message is empty!")
-                        raise Exception("Empty message generated")
-                    
                     await send_to_all_subscribers(message)
-                    last_push_time = current_time
-                    consecutive_errors = 0  # 重置錯誤計數
-                    logger.info(f"✅ Auto push completed successfully")
-                    
-                except Exception as push_error:
-                    consecutive_errors += 1
-                    logger.error(f"❌ Push error (attempt {consecutive_errors}): {push_error}")
-                    logger.error(f"Push error details: {str(push_error)}")
-                    
-                    if consecutive_errors >= max_consecutive_errors:
-                        logger.error(f"🔥 Too many consecutive errors ({consecutive_errors}), will retry with longer delay")
-                        await asyncio.sleep(60)  # 等待更久再重試
-                        consecutive_errors = 0
-                        
-            else:
-                logger.info(f"⏭️ Skipping push (enabled: {auto_push_enabled}, subscribers: {len(subscribers)})")
-            
-            # 安全的睡眠
-            try:
-                logger.info(f"💤 Sleeping for {push_interval} seconds until next push...")
+                    last_push_time = time.time()
+                    logger.info(f"Auto push completed successfully")
+                else:
+                    logger.info(f"Skipping push (enabled: {auto_push_enabled}, subscribers: {len(subscribers)})")
+                
                 await asyncio.sleep(push_interval)
-            except Exception as sleep_error:
-                logger.error(f"❌ Sleep error: {sleep_error}")
-                # 如果 sleep 失败，使用备用等待时间
-                await asyncio.sleep(300)  # 5 分钟备用
                 
-        except Exception as task_error:
-            logger.error(f"🔥 Critical auto push task error: {task_error}")
-            logger.error(f"Task error details: {str(task_error)}")
-            
-            # 即使出现严重错误，也要继续运行
-            try:
+            except Exception as e:
+                logger.error(f"Auto push error: {e}")
                 await asyncio.sleep(60)  # 等待1分钟后重试
-            except:
-                pass  # 确保不会在 sleep 时也崩溃
-
-# === 任务监控 ===
-async def task_monitor():
-    """监控推播任务是否还活着"""
-    global last_push_time, push_task_running, task_restart_count
-    
-    logger.info("🔍 Task monitor started")
-    
-    while True:
-        try:
-            current_time = time.time()
-            time_since_last_push = current_time - last_push_time
-            
-            # 如果超过推播间隔的2倍时间没有推播，认为任务可能死亡
-            if last_push_time > 0 and time_since_last_push > (push_interval * 2):
-                logger.warning(f"⚠️ Push task seems inactive. Last push: {time_since_last_push:.0f}s ago")
                 
-                if time_since_last_push > (push_interval * 3):
-                    logger.error(f"🚨 Push task appears dead! Attempting restart...")
-                    push_task_running = False
-                    task_restart_count += 1
-                    
-                    # 尝试重启推播任务
-                    if app_loop:
-                        app_loop.create_task(auto_push_task())
-                        logger.info(f"🔄 Push task restarted (attempt #{task_restart_count})")
-            
-            await asyncio.sleep(120)  # 每2分钟检查一次
-            
-        except Exception as monitor_error:
-            logger.error(f"❌ Task monitor error: {monitor_error}")
-            await asyncio.sleep(60)
+    except Exception as e:
+        logger.error(f"Critical auto push task error: {e}")
+    finally:
+        push_task_active = False
+        logger.info("Auto push task ended")
 
 # === Flask 路由 ===
 @app.route('/')
@@ -653,8 +596,7 @@ def dashboard():
                 hyperliquid_data=[], 
                 last_update="Error",
                 bot_running=False,
-                subscriber_count=0,
-                task_running=False
+                subscriber_count=0
             )
     except Exception as e:
         logger.error(f"Dashboard page error: {e}")
@@ -671,9 +613,8 @@ def health_check():
         "timestamp": datetime.datetime.now().isoformat(),
         "bot_running": telegram_app is not None,
         "subscribers": len(subscribers),
-        "push_task_running": push_task_running,
-        "last_push_ago": f"{time_since_last_push:.0f}s" if last_push_time > 0 else "never",
-        "task_restarts": task_restart_count
+        "push_task_active": push_task_active,
+        "last_push_ago": f"{time_since_last_push:.0f}s" if last_push_time > 0 else "never"
     })
 
 @app.route('/api/yields')
@@ -726,13 +667,13 @@ def setup_webhook():
         )
         result = response.json()
         if result.get("ok"):
-            logger.info("✅ Webhook setup successful")
+            logger.info("Webhook setup successful")
             return True
         else:
-            logger.error(f"❌ Webhook setup failed: {result}")
+            logger.error(f"Webhook setup failed: {result}")
             return False
     except Exception as e:
-        logger.error(f"❌ Webhook setup error: {e}")
+        logger.error(f"Webhook setup error: {e}")
         return False
 
 # === 初始化 Telegram 應用程式 ===
@@ -741,11 +682,11 @@ async def setup_telegram():
     global telegram_app, app_loop
     
     if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN not set, cannot initialize Telegram app")
+        logger.error("BOT_TOKEN not set, cannot initialize Telegram app")
         return False
     
     try:
-        logger.info("🤖 Initializing Telegram application...")
+        logger.info("Initializing Telegram application...")
         telegram_app = ApplicationBuilder().token(BOT_TOKEN).build()
         app_loop = asyncio.get_running_loop()
         
@@ -757,11 +698,11 @@ async def setup_telegram():
         await telegram_app.initialize()
         await telegram_app.start()
         
-        logger.info("✅ Telegram application initialized successfully")
+        logger.info("Telegram application initialized successfully")
         return True
         
     except Exception as e:
-        logger.error(f"❌ Telegram app initialization failed: {e}")
+        logger.error(f"Telegram app initialization failed: {e}")
         return False
 
 # === 主程序 ===
@@ -781,21 +722,17 @@ def run_async_loop():
             # 初始化推播时间
             last_push_time = time.time()
             
-            # 啟動自動推播任務
+            # 啟動自動推播任務（只启动一次）
             loop.create_task(auto_push_task())
-            logger.info("✅ Auto push task scheduled")
-            
-            # 啟動任務監控
-            loop.create_task(task_monitor())
-            logger.info("✅ Task monitor scheduled")
+            logger.info("Auto push task scheduled")
             
         else:
-            logger.error("❌ Telegram setup failed, web service only")
+            logger.error("Telegram setup failed, web service only")
         
         # 保持 loop 運行
         loop.run_forever()
     except Exception as e:
-        logger.error(f"❌ Asyncio loop error: {e}")
+        logger.error(f"Asyncio loop error: {e}")
     finally:
         loop.close()
 
@@ -804,22 +741,22 @@ def main():
     global subscribers
     
     if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN environment variable not set")
+        logger.error("BOT_TOKEN environment variable not set")
         print("Error: BOT_TOKEN environment variable not set")
         return
     
-    print("🚀 Starting Complete DeFi Dashboard + Telegram Bot (Enhanced Version)")
-    print("Features: Dashboard + Auto Push to Telegram + Enhanced Error Handling")
+    print("Starting DeFi Dashboard + Telegram Bot (Fixed Version)")
+    print("Features: Dashboard + Auto Push to Telegram")
     print("Tracking assets: BTC, ETH, HYPE, BNB, SOL, AAVE, SUI, ENA, DOGE, PENDLE")
     
     # 載入訂閱者
     subscribers = load_subscribers()
-    print(f"📋 Loaded {len(subscribers)} subscribers")
+    print(f"Loaded {len(subscribers)} subscribers")
     
     # 在背景啟動 asyncio loop (Telegram bot)
     async_thread = threading.Thread(target=run_async_loop, daemon=True)
     async_thread.start()
-    print("🔄 Telegram background tasks started")
+    print("Telegram background tasks started")
     
     # 等待 Telegram 應用程式初始化
     time.sleep(3)
@@ -827,15 +764,15 @@ def main():
     # 設定 webhook
     app_url = get_app_url()
     if setup_webhook():
-        print(f"✅ Telegram webhook setup successful: {app_url}{WEBHOOK_PATH}")
+        print(f"Telegram webhook setup successful: {app_url}{WEBHOOK_PATH}")
     else:
-        print("❌ Telegram webhook setup failed")
+        print("Telegram webhook setup failed")
     
     # 啟動 Flask 應用程式
-    print(f"🌐 Dashboard URL: {app_url}")
-    print(f"❤️ Health check: {app_url}/health")
+    print(f"Dashboard URL: {app_url}")
+    print(f"Health check: {app_url}/health")
     print("")
-    print("✨ Enhanced Features:")
+    print("Features:")
     print("   ✓ Real-time yield dashboard")
     print("   ✓ Curve Finance-style UI")
     print("   ✓ Underlying APY color coding")
@@ -843,13 +780,12 @@ def main():
     print("   ✓ /start /check /stop commands")
     print(f"   ✓ Auto push every {push_interval//60} minutes")
     print("   ✓ Health check endpoint for monitoring")
-    print("   ✓ Enhanced error handling & task monitoring")
-    print("   ✓ Automatic task restart on failure")
+    print("   ✓ Fixed task duplication issue")
     
     try:
         app.run(host="0.0.0.0", port=PORT, debug=False)
     except KeyboardInterrupt:
-        print("\n👋 Dashboard stopped")
+        print("\nDashboard stopped")
 
 if __name__ == "__main__":
     main()
