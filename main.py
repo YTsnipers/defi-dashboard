@@ -1,4 +1,4 @@
-# main.py - Render 雲端版本 (修复任务重复启动)
+# main.py - Render 雲端版本 (整合 GitHub Gist 自動備份)
 #!/usr/bin/env python3
 
 import datetime
@@ -29,6 +29,10 @@ SUB_FILE = "subscribers.json"
 PORT = int(os.getenv("PORT", 10000))  # Render 預設端口
 WEBHOOK_PATH = "/webhook"
 REQUEST_TIMEOUT = 10
+
+# === GitHub Gist 設定 ===
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GIST_ID = os.getenv("GIST_ID")
 
 # === Hyperliquid 設定 ===
 HYPERLIQUID_API_URL = "https://api.hyperliquid.xyz/info"
@@ -66,6 +70,162 @@ push_interval = 300  # 5 分鐘
 # === 简化的任务状态跟踪 ===
 last_push_time = 0
 push_task_active = False
+
+# === GitHub Gist 管理函數 ===
+def backup_subscribers_to_github_gist(subscribers_list):
+    """備份訂閱者到 GitHub Gist"""
+    if not GITHUB_TOKEN:
+        logger.info("ℹ️ GITHUB_TOKEN not set, skipping Gist backup")
+        return None
+        
+    try:
+        gist_data = {
+            "description": "DeFi Bot Subscribers Backup",
+            "public": False,
+            "files": {
+                "subscribers.json": {
+                    "content": json.dumps(subscribers_list, indent=2)
+                }
+            }
+        }
+        
+        global GIST_ID
+        if GIST_ID:
+            # 更新現有 Gist
+            response = requests.patch(
+                f"https://api.github.com/gists/{GIST_ID}",
+                headers={"Authorization": f"token {GITHUB_TOKEN}"},
+                json=gist_data,
+                timeout=10
+            )
+            if response.status_code == 200:
+                logger.info("✅ Subscribers backed up to existing GitHub Gist")
+                return True
+            else:
+                logger.error(f"❌ Failed to update Gist: {response.status_code}")
+                return False
+        else:
+            # 創建新 Gist
+            response = requests.post(
+                "https://api.github.com/gists",
+                headers={"Authorization": f"token {GITHUB_TOKEN}"},
+                json=gist_data,
+                timeout=10
+            )
+            if response.status_code == 201:
+                new_gist_id = response.json()["id"]
+                logger.info("✅ New GitHub Gist created successfully")
+                logger.info(f"🔧 Please add this to Render environment variables:")
+                logger.info(f"   GIST_ID = {new_gist_id}")
+                return new_gist_id
+            else:
+                logger.error(f"❌ Failed to create Gist: {response.status_code}")
+                return False
+                
+    except Exception as e:
+        logger.error(f"❌ GitHub Gist backup error: {e}")
+        return False
+
+def load_subscribers_from_github_gist():
+    """從 GitHub Gist 載入訂閱者"""
+    if not GITHUB_TOKEN or not GIST_ID:
+        return set()
+        
+    try:
+        response = requests.get(
+            f"https://api.github.com/gists/{GIST_ID}",
+            headers={"Authorization": f"token {GITHUB_TOKEN}"},
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            gist_data = response.json()
+            content = gist_data["files"]["subscribers.json"]["content"]
+            subscribers_list = json.loads(content)
+            logger.info(f"✅ Loaded {len(subscribers_list)} subscribers from GitHub Gist")
+            return set(subscribers_list)
+        else:
+            logger.error(f"❌ Failed to load from GitHub Gist: {response.status_code}")
+            return set()
+            
+    except Exception as e:
+        logger.error(f"❌ GitHub Gist load error: {e}")
+        return set()
+
+def load_subscribers_from_env():
+    """從環境變數載入"""
+    try:
+        env_subscribers = os.getenv("SUBSCRIBERS_LIST")
+        if env_subscribers:
+            data = json.loads(env_subscribers)
+            logger.info(f"✅ Loaded {len(data)} subscribers from environment variables")
+            return set(data) if isinstance(data, list) else set()
+        return set()
+    except Exception as e:
+        logger.error(f"❌ Failed to load from environment: {e}")
+        return set()
+
+def load_subscribers_from_file():
+    """從文件載入"""
+    try:
+        if os.path.exists(SUB_FILE):
+            with open(SUB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                logger.info(f"✅ Loaded {len(data)} subscribers from file")
+                return set(data) if isinstance(data, list) else set()
+        return set()
+    except Exception as e:
+        logger.error(f"❌ Failed to load from file: {e}")
+        return set()
+
+def load_subscribers():
+    """改進版訂閱者載入（多重來源）"""
+    logger.info("🔍 Loading subscribers from multiple sources...")
+    
+    # 1. 嘗試從環境變數載入
+    env_subs = load_subscribers_from_env()
+    if env_subs:
+        logger.info("📋 Using subscribers from environment variables")
+        return env_subs
+    
+    # 2. 嘗試從 GitHub Gist 載入
+    gist_subs = load_subscribers_from_github_gist()
+    if gist_subs:
+        logger.info("📋 Using subscribers from GitHub Gist")
+        return gist_subs
+    
+    # 3. 最後從文件載入
+    file_subs = load_subscribers_from_file()
+    if file_subs:
+        logger.info("📋 Using subscribers from local file")
+        return file_subs
+    
+    logger.info("📋 No existing subscribers found, starting fresh")
+    return set()
+
+def save_subscribers(subs):
+    """改進版訂閱者保存（多重備份）"""
+    try:
+        subscribers_list = list(subs)
+        
+        # 1. 保存到文件
+        with open(SUB_FILE, "w", encoding="utf-8") as f:
+            json.dump(subscribers_list, f, ensure_ascii=False, indent=2)
+        
+        # 2. 記錄到日誌供手動設定環境變數
+        subscribers_json = json.dumps(subscribers_list)
+        logger.info(f"📋 Manual backup - SUBSCRIBERS_LIST = {subscribers_json}")
+        
+        # 3. 備份到 GitHub Gist（如果設定了）
+        gist_result = backup_subscribers_to_github_gist(subscribers_list)
+        if gist_result and isinstance(gist_result, str):
+            # 新建的 Gist，需要設定 GIST_ID
+            logger.info(f"🆕 New Gist created, please update environment variable:")
+            logger.info(f"   GIST_ID = {gist_result}")
+        
+        logger.info(f"✅ Saved {len(subs)} subscribers with multiple backups")
+    except Exception as e:
+        logger.error(f"❌ Failed to save subscribers: {e}")
 
 # === 儀表板 HTML ===
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -116,7 +276,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
         
         <div class="status-banner">
-            🚀 Running on Render | Bot: {{ 'Online' if bot_running else 'Offline' }} | Subscribers: {{ subscriber_count }} | Last updated: {{ last_update }}
+            🚀 Running on Render | Bot: {{ 'Online' if bot_running else 'Offline' }} | Subscribers: {{ subscriber_count }} | Last updated: {{ last_update }} | Backup: {{ backup_status }}
         </div>
         
         <div class="pools-grid">
@@ -194,28 +354,7 @@ def get_app_url():
     service_name = os.getenv("RENDER_SERVICE_NAME", "defi-dashboard")
     return f"https://{service_name}.onrender.com"
 
-# === 輔助函數 ===
-def load_subscribers():
-    """載入訂閱者清單"""
-    try:
-        if os.path.exists(SUB_FILE):
-            with open(SUB_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return set(data) if isinstance(data, list) else set()
-        return set()
-    except Exception as e:
-        logger.error(f"Failed to load subscribers: {e}")
-        return set()
-
-def save_subscribers(subs):
-    """儲存訂閱者清單"""
-    try:
-        with open(SUB_FILE, "w", encoding="utf-8") as f:
-            json.dump(list(subs), f, ensure_ascii=False, indent=2)
-        logger.info(f"Saved {len(subs)} subscribers")
-    except Exception as e:
-        logger.error(f"Failed to save subscribers: {e}")
-
+# === 其他函數保持不變 ===
 def fetch_api_data(url, description=""):
     """通用 API 資料擷取函數"""
     try:
@@ -355,13 +494,17 @@ def get_dashboard_data():
                     "rate": "API Error"
                 })
 
+        # 備份狀態
+        backup_status = "GitHub" if GITHUB_TOKEN and GIST_ID else "Local"
+
         return {
             "pendle_data": pendle_data,
             "merkl_data": merkl_data,
             "hyperliquid_data": hyperliquid_data,
             "last_update": datetime.datetime.now().strftime('%H:%M:%S'),
             "bot_running": telegram_app is not None,
-            "subscriber_count": len(subscribers)
+            "subscriber_count": len(subscribers),
+            "backup_status": backup_status
         }
         
     except Exception as e:
@@ -506,6 +649,7 @@ async def handle_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if chat_id in subscribers:
             subscribers.remove(chat_id)
             save_subscribers(subscribers)
+            logger.info(f"Subscriber removed, total: {len(subscribers)}")
         await update.message.reply_text("Successfully unsubscribed")
     except Exception as e:
         logger.error(f"handle_stop error: {e}")
@@ -596,7 +740,8 @@ def dashboard():
                 hyperliquid_data=[], 
                 last_update="Error",
                 bot_running=False,
-                subscriber_count=0
+                subscriber_count=0,
+                backup_status="Error"
             )
     except Exception as e:
         logger.error(f"Dashboard page error: {e}")
@@ -614,7 +759,8 @@ def health_check():
         "bot_running": telegram_app is not None,
         "subscribers": len(subscribers),
         "push_task_active": push_task_active,
-        "last_push_ago": f"{time_since_last_push:.0f}s" if last_push_time > 0 else "never"
+        "last_push_ago": f"{time_since_last_push:.0f}s" if last_push_time > 0 else "never",
+        "github_backup": GITHUB_TOKEN is not None and GIST_ID is not None
     })
 
 @app.route('/api/yields')
@@ -745,18 +891,27 @@ def main():
         print("Error: BOT_TOKEN environment variable not set")
         return
     
-    print("Starting DeFi Dashboard + Telegram Bot (Fixed Version)")
-    print("Features: Dashboard + Auto Push to Telegram")
+    print("🚀 Starting DeFi Dashboard + Telegram Bot (GitHub Gist Backup)")
+    print("Features: Dashboard + Auto Push + Persistent Subscribers")
     print("Tracking assets: BTC, ETH, HYPE, BNB, SOL, AAVE, SUI, ENA, DOGE, PENDLE")
     
-    # 載入訂閱者
+    # 載入訂閱者（多重來源）
     subscribers = load_subscribers()
-    print(f"Loaded {len(subscribers)} subscribers")
+    print(f"📋 Loaded {len(subscribers)} subscribers from persistent storage")
+    
+    # 顯示備份狀態
+    if GITHUB_TOKEN:
+        if GIST_ID:
+            print("✅ GitHub Gist backup: ACTIVE")
+        else:
+            print("⚠️ GitHub Gist backup: READY (will create Gist on first subscription)")
+    else:
+        print("ℹ️ GitHub Gist backup: DISABLED (GITHUB_TOKEN not set)")
     
     # 在背景啟動 asyncio loop (Telegram bot)
     async_thread = threading.Thread(target=run_async_loop, daemon=True)
     async_thread.start()
-    print("Telegram background tasks started")
+    print("🔄 Telegram background tasks started")
     
     # 等待 Telegram 應用程式初始化
     time.sleep(3)
@@ -764,28 +919,26 @@ def main():
     # 設定 webhook
     app_url = get_app_url()
     if setup_webhook():
-        print(f"Telegram webhook setup successful: {app_url}{WEBHOOK_PATH}")
+        print(f"✅ Telegram webhook setup successful: {app_url}{WEBHOOK_PATH}")
     else:
-        print("Telegram webhook setup failed")
+        print("❌ Telegram webhook setup failed")
     
     # 啟動 Flask 應用程式
-    print(f"Dashboard URL: {app_url}")
-    print(f"Health check: {app_url}/health")
+    print(f"🌐 Dashboard URL: {app_url}")
+    print(f"❤️ Health check: {app_url}/health")
     print("")
-    print("Features:")
+    print("✨ Features:")
     print("   ✓ Real-time yield dashboard")
-    print("   ✓ Curve Finance-style UI")
-    print("   ✓ Underlying APY color coding")
     print("   ✓ Telegram bot with auto push")
     print("   ✓ /start /check /stop commands")
     print(f"   ✓ Auto push every {push_interval//60} minutes")
-    print("   ✓ Health check endpoint for monitoring")
-    print("   ✓ Fixed task duplication issue")
+    print("   ✓ GitHub Gist automatic backup")
+    print("   ✓ Persistent subscribers across deployments")
     
     try:
         app.run(host="0.0.0.0", port=PORT, debug=False)
     except KeyboardInterrupt:
-        print("\nDashboard stopped")
+        print("\n👋 Dashboard stopped")
 
 if __name__ == "__main__":
     main()
